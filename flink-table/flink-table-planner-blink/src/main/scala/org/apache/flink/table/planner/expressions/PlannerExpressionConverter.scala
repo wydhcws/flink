@@ -20,13 +20,13 @@ package org.apache.flink.table.planner.expressions
 
 import org.apache.flink.api.common.typeinfo.{TypeInformation, Types}
 import org.apache.flink.table.api.{TableException, ValidationException}
-import org.apache.flink.table.expressions.{ApiExpressionVisitor, CallExpression, Expression, FieldReferenceExpression, LocalReferenceExpression, LookupCallExpression, TableReferenceExpression, TableSymbol, TimeIntervalUnit, TimePointUnit, TypeLiteralExpression, UnresolvedCallExpression, UnresolvedReferenceExpression, ValueLiteralExpression}
+import org.apache.flink.table.expressions._
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions._
 import org.apache.flink.table.functions._
 import org.apache.flink.table.planner.expressions.{E => PlannerE, UUID => PlannerUUID}
 import org.apache.flink.table.planner.functions.InternalFunctionDefinitions.THROW_EXCEPTION
 import org.apache.flink.table.runtime.types.TypeInfoDataTypeConverter.fromDataTypeToTypeInfo
-import org.apache.flink.table.types.logical.LogicalTypeRoot.{CHAR, DECIMAL, SYMBOL, TIMESTAMP_WITHOUT_TIME_ZONE}
+import org.apache.flink.table.types.logical.LogicalTypeRoot.{CHAR, DECIMAL, SYMBOL}
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks._
 
 import _root_.scala.collection.JavaConverters._
@@ -37,16 +37,30 @@ import _root_.scala.collection.JavaConverters._
 class PlannerExpressionConverter private extends ApiExpressionVisitor[PlannerExpression] {
 
   override def visit(call: CallExpression): PlannerExpression = {
-    translateCall(call.getFunctionDefinition, call.getChildren.asScala)
+    val definition = call.getFunctionDefinition
+    translateCall(
+      definition, call.getChildren.asScala,
+      () =>
+        if (definition.getKind == FunctionKind.AGGREGATE ||
+            definition.getKind == FunctionKind.TABLE_AGGREGATE) {
+          ApiResolvedAggregateCallExpression(call)
+        } else {
+          ApiResolvedCallExpression(call)
+        })
   }
 
   override def visit(unresolvedCall: UnresolvedCallExpression): PlannerExpression = {
-    translateCall(unresolvedCall.getFunctionDefinition, unresolvedCall.getChildren.asScala)
+    val definition = unresolvedCall.getFunctionDefinition
+    translateCall(
+      definition,
+      unresolvedCall.getChildren.asScala,
+      () => throw new TableException(s"Unsupported function definition: $definition"))
   }
 
   private def translateCall(
       func: FunctionDefinition,
-      children: Seq[Expression])
+      children: Seq[Expression],
+      unknownFunctionHandler: () => PlannerExpression)
     : PlannerExpression = {
 
     // special case: requires individual handling of child expressions
@@ -151,12 +165,12 @@ class PlannerExpressionConverter private extends ApiExpressionVisitor[PlannerExp
             expr
 
           case AND =>
-            assert(args.size == 2)
-            And(args.head, args.last)
+            assert(args.size >= 2)
+            args.reduceLeft(And)
 
           case OR =>
-            assert(args.size == 2)
-            Or(args.head, args.last)
+            assert(args.size >= 2)
+            args.reduceLeft(Or)
 
           case NOT =>
             assert(args.size == 1)
@@ -290,6 +304,10 @@ class PlannerExpressionConverter private extends ApiExpressionVisitor[PlannerExp
             assert(args.size == 1)
             Lower(args.head)
 
+          case LOWERCASE =>
+            assert(args.size == 1)
+            Lower(args.head)
+
           case SIMILAR =>
             assert(args.size == 2)
             Similar(args.head, args.last)
@@ -323,6 +341,10 @@ class PlannerExpressionConverter private extends ApiExpressionVisitor[PlannerExp
             Trim(trimMode, args(2), args(3))
 
           case UPPER =>
+            assert(args.size == 1)
+            Upper(args.head)
+
+          case UPPERCASE =>
             assert(args.size == 1)
             Upper(args.head)
 
@@ -701,7 +723,7 @@ class PlannerExpressionConverter private extends ApiExpressionVisitor[PlannerExp
             StreamRecordTimestamp()
 
           case _ =>
-            throw new TableException(s"Unsupported function definition: $fd")
+            unknownFunctionHandler()
         }
     }
   }
@@ -745,12 +767,6 @@ class PlannerExpressionConverter private extends ApiExpressionVisitor[PlannerExp
       val value = literal.getValueAs(classOf[java.lang.String]).get()
       if (hasLength(logicalType, value.length)) {
         return Types.STRING
-      }
-    }
-
-    else if (hasRoot(logicalType, TIMESTAMP_WITHOUT_TIME_ZONE)) {
-      if (getPrecision(logicalType) <= 3) {
-        return Types.SQL_TIMESTAMP
       }
     }
 

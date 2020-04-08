@@ -31,6 +31,7 @@ import org.apache.flink.runtime.concurrent.ManuallyTriggeredScheduledExecutor;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.failover.AdaptedRestartPipelinedRegionStrategyNG;
 import org.apache.flink.runtime.executiongraph.restart.FixedDelayRestartStrategy;
+import org.apache.flink.runtime.executiongraph.utils.SimpleAckingTaskManagerGateway;
 import org.apache.flink.runtime.executiongraph.utils.SimpleSlotProvider;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertex;
@@ -49,6 +50,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.util.Preconditions.checkState;
 import static org.hamcrest.Matchers.empty;
@@ -65,15 +68,23 @@ public class AdaptedRestartPipelinedRegionStrategyNGAbortPendingCheckpointsTest 
 
 	private ComponentMainThreadExecutor componentMainThreadExecutor;
 
+	private SimpleAckingTaskManagerGateway taskManagerGateway;
+
 	@Before
 	public void setUp() {
 		manualMainThreadExecutor = new ManuallyTriggeredScheduledExecutor();
 		componentMainThreadExecutor = new ComponentMainThreadExecutorServiceAdapter(manualMainThreadExecutor, Thread.currentThread());
+		taskManagerGateway = new SimpleAckingTaskManagerGateway();
 	}
 
 	@Test
 	public void abortPendingCheckpointsWhenRestartingTasks() throws Exception {
 		final JobGraph jobGraph = createStreamingJobGraph();
+		final CountDownLatch checkpointTriggeredLatch = new CountDownLatch(1);
+		taskManagerGateway.setCheckpointConsumer(
+			(executionAttemptID, jobId, checkpointId, timestamp, checkpointOptions, advanceToEndOfEventTime) -> {
+				checkpointTriggeredLatch.countDown();
+			});
 		final ExecutionGraph executionGraph = createExecutionGraph(jobGraph);
 
 		final Iterator<ExecutionVertex> vertexIterator = executionGraph.getAllExecutionVertices().iterator();
@@ -84,7 +95,13 @@ public class AdaptedRestartPipelinedRegionStrategyNGAbortPendingCheckpointsTest 
 		final CheckpointCoordinator checkpointCoordinator = executionGraph.getCheckpointCoordinator();
 		checkState(checkpointCoordinator != null);
 
-		checkpointCoordinator.triggerCheckpoint(System.currentTimeMillis(),  false);
+		checkpointCoordinator.triggerCheckpoint(System.currentTimeMillis(), false);
+		// there is an async call in IO thread
+		// here we need to retry to make sure the callback of the async call could be executed
+		manualMainThreadExecutor.triggerAll();
+		while (!checkpointTriggeredLatch.await(10, TimeUnit.MILLISECONDS)) {
+			manualMainThreadExecutor.triggerAll();
+		}
 		assertEquals(1, checkpointCoordinator.getNumberOfPendingCheckpoints());
 		long checkpointId = checkpointCoordinator.getPendingCheckpoints().keySet().iterator().next();
 
@@ -132,10 +149,12 @@ public class AdaptedRestartPipelinedRegionStrategyNGAbortPendingCheckpointsTest 
 	}
 
 	private ExecutionGraph createExecutionGraph(final JobGraph jobGraph) throws Exception {
-		final ExecutionGraph executionGraph = new ExecutionGraphTestUtils.TestingExecutionGraphBuilder(jobGraph)
+		final ExecutionGraph executionGraph = TestingExecutionGraphBuilder
+			.newBuilder()
+			.setJobGraph(jobGraph)
 			.setRestartStrategy(new FixedDelayRestartStrategy(10, 0))
 			.setFailoverStrategyFactory(AdaptedRestartPipelinedRegionStrategyNG::new)
-			.setSlotProvider(new SimpleSlotProvider(jobGraph.getJobID(), 2))
+			.setSlotProvider(new SimpleSlotProvider(2, taskManagerGateway))
 			.build();
 
 		enableCheckpointing(executionGraph);

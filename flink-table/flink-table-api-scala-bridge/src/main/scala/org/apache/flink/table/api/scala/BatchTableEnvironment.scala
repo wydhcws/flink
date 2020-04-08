@@ -25,6 +25,7 @@ import org.apache.flink.table.catalog.{CatalogManager, GenericInMemoryCatalog}
 import org.apache.flink.table.descriptors.{BatchTableDescriptor, ConnectorDescriptor}
 import org.apache.flink.table.expressions.Expression
 import org.apache.flink.table.functions.{AggregateFunction, TableFunction}
+import org.apache.flink.table.module.ModuleManager
 import org.apache.flink.table.sinks.TableSink
 
 /**
@@ -79,51 +80,197 @@ trait BatchTableEnvironment extends TableEnvironment {
   /**
     * Converts the given [[DataSet]] into a [[Table]] with specified field names.
     *
+    * There are two modes for mapping original fields to the fields of the [[Table]]:
+    *
+    * 1. Reference input fields by name:
+    * All fields in the schema definition are referenced by name
+    * (and possibly renamed using an alias (as). In this mode, fields can be reordered and
+    * projected out. This mode can be used for any input type, including POJOs.
+    *
     * Example:
     *
     * {{{
     *   val set: DataSet[(String, Long)] = ...
-    *   val tab: Table = tableEnv.fromDataSet(set, 'a, 'b)
+    *   val table: Table = tableEnv.fromDataSet(
+    *      set,
+    *      $"_2", // reorder and use the original field
+    *      $"_1" as "name" // reorder and give the original field a better name
+    *   )
+    * }}}
+    *
+    * 2. Reference input fields by position:
+    * In this mode, fields are simply renamed. This mode can only be
+    * used if the input type has a defined field order (tuple, case class, Row) and none of
+    * the `fields` references a field of the input type.
+    *
+    * Example:
+    *
+    * {{{
+    *   val set: DataSet[(String, Long)] = ...
+    *   val table: Table = tableEnv.fromDataSet(
+    *      set,
+    *      $"a", // renames the first field to 'a'
+    *      $"b" // renames the second field to 'b'
+    *   )
     * }}}
     *
     * @param dataSet The [[DataSet]] to be converted.
-    * @param fields The field names of the resulting [[Table]].
+    * @param fields The fields expressions to map original fields of the DataSet to the fields of
+    *               the [[Table]].
     * @tparam T The type of the [[DataSet]].
     * @return The converted [[Table]].
     */
   def fromDataSet[T](dataSet: DataSet[T], fields: Expression*): Table
 
   /**
-    * Registers the given [[DataSet]] as table in the
-    * [[TableEnvironment]]'s catalog.
-    * Registered tables can be referenced in SQL queries.
+    * Creates a view from the given [[DataSet]].
+    * Registered views can be referenced in SQL queries.
     *
     * The field names of the [[Table]] are automatically derived from the type of the [[DataSet]].
+    *
+    * The view is registered in the namespace of the current catalog and database. To register the
+    * view in a different catalog use [[createTemporaryView]].
+    *
+    * Temporary objects can shadow permanent ones. If a permanent object in a given path exists,
+    * it will be inaccessible in the current session. To make the permanent object available again
+    * you can drop the corresponding temporary object.
     *
     * @param name The name under which the [[DataSet]] is registered in the catalog.
     * @param dataSet The [[DataSet]] to register.
     * @tparam T The type of the [[DataSet]] to register.
+    * @deprecated use [[createTemporaryView]]
     */
+  @deprecated
   def registerDataSet[T](name: String, dataSet: DataSet[T]): Unit
 
   /**
-    * Registers the given [[DataSet]] as table with specified field names in the
-    * [[TableEnvironment]]'s catalog.
+    * Creates a view from the given [[DataSet]] in a given path.
     * Registered tables can be referenced in SQL queries.
+    *
+    * The field names of the [[Table]] are automatically derived
+    * from the type of the [[DataSet]].
+    *
+    * Temporary objects can shadow permanent ones. If a permanent object in a given path exists,
+    * it will be inaccessible in the current session. To make the permanent object available again
+    * you can drop the corresponding temporary object.
+    *
+    * @param path The path under which the [[DataSet]] is created.
+    *             See also the [[TableEnvironment]] class description for the format of the path.
+    * @param dataSet The [[DataSet]] out of which to create the view.
+    * @tparam T The type of the [[DataSet]].
+    */
+  def createTemporaryView[T](path: String, dataSet: DataSet[T]): Unit
+
+  /**
+    * Creates a view from the given [[DataSet]] in a given path with specified field names.
+    * Registered views can be referenced in SQL queries.
+    *
+    * There are two modes for mapping original fields to the fields of the View:
+    *
+    * 1. Reference input fields by name:
+    * All fields in the schema definition are referenced by name
+    * (and possibly renamed using an alias (as). In this mode, fields can be reordered and
+    * projected out. This mode can be used for any input type, including POJOs.
     *
     * Example:
     *
     * {{{
     *   val set: DataSet[(String, Long)] = ...
-    *   tableEnv.registerDataSet("myTable", set, 'a, 'b)
+    *   tableEnv.registerDataSet(
+    *      "myTable",
+    *      set,
+    *      $"_2", // reorder and use the original field
+    *      $"_1" as "name" // reorder and give the original field a better name
+    *   );
     * }}}
+    *
+    * 2. Reference input fields by position:
+    * In this mode, fields are simply renamed. This mode can only be
+    * used if the input type has a defined field order (tuple, case class, Row) and none of
+    * the `fields` references a field of the input type.
+    *
+    * Example:
+    *
+    * {{{
+    *   val set: DataSet[(String, Long)] = ...
+    *   tableEnv.registerDataSet(
+    *      "myTable",
+    *      set,
+    *      $"a", // renames the first field to 'a'
+    *      $"b" // renames the second field to 'b'
+    *   )
+    * }}}
+    *
+    * The view is registered in the namespace of the current catalog and database. To register the
+    * view in a different catalog use [[createTemporaryView]].
+    *
+    * Temporary objects can shadow permanent ones. If a permanent object in a given path exists,
+    * it will be inaccessible in the current session. To make the permanent object available again
+    * you can drop the corresponding temporary object.
     *
     * @param name The name under which the [[DataSet]] is registered in the catalog.
     * @param dataSet The [[DataSet]] to register.
-    * @param fields The field names of the registered table.
+    * @param fields The fields expressions to map original fields of the DataSet to the fields of
+    *               the View.
     * @tparam T The type of the [[DataSet]] to register.
+    * @deprecated use [[createTemporaryView]]
     */
+  @deprecated
   def registerDataSet[T](name: String, dataSet: DataSet[T], fields: Expression*): Unit
+
+  /**
+    * Creates a view from the given [[DataSet]] in a given path with specified field names.
+    * Registered views can be referenced in SQL queries.
+    *
+    * There are two modes for mapping original fields to the fields of the View:
+    *
+    * 1. Reference input fields by name:
+    * All fields in the schema definition are referenced by name
+    * (and possibly renamed using an alias (as). In this mode, fields can be reordered and
+    * projected out. This mode can be used for any input type, including POJOs.
+    *
+    * Example:
+    *
+    * {{{
+    *   val set: DataSet[(String, Long)] = ...
+    *   tableEnv.createTemporaryView(
+    *      "cat.db.myTable",
+    *      set,
+    *      $"_2", // reorder and use the original field
+    *      $"_1" as "name" // reorder and give the original field a better name
+    *   )
+    * }}}
+    *
+    * 2. Reference input fields by position:
+    * In this mode, fields are simply renamed. This mode can only be
+    * used if the input type has a defined field order (tuple, case class, Row) and none of
+    * the `fields` references a field of the input type.
+    *
+    * Example:
+    *
+    * {{{
+    *   val set: DataSet[(String, Long)] = ...
+    *   tableEnv.createTemporaryView(
+    *      "cat.db.myTable",
+    *      set,
+    *      $"a", // renames the first field to 'a'
+    *      $"b" // renames the second field to 'b'
+    *   )
+    * }}}
+    *
+    * Temporary objects can shadow permanent ones. If a permanent object in a given path exists,
+    * it will be inaccessible in the current session. To make the permanent object available again
+    * you can drop the corresponding temporary object.
+    *
+    * @param path The path under which the [[DataSet]] is created.
+    *             See also the [[TableEnvironment]] class description for the format of the
+    *             path.
+    * @param dataSet The [[DataSet]] out of which to create the view.
+    * @param fields The fields expressions to map original fields of the DataSet to the fields of
+    *               the View.
+    * @tparam T The type of the [[DataSet]].
+    */
+  def createTemporaryView[T](path: String, dataSet: DataSet[T], fields: Expression*): Unit
 
   /**
     * Converts the given [[Table]] into a [[DataSet]] of a specified type.
@@ -192,7 +339,9 @@ trait BatchTableEnvironment extends TableEnvironment {
     *                          name of the [[TableSink]] is provided.
     * @param sinkPathContinued The remaining part of the path of the registered [[TableSink]] to
     *                          which the [[Table]] is written.
+    * @deprecated use `TableEnvironment#insertInto(String, Table)`
     */
+  @deprecated
   def insertInto(
     table: Table,
     queryConfig: BatchQueryConfig,
@@ -217,14 +366,14 @@ trait BatchTableEnvironment extends TableEnvironment {
   override def execute(jobName: String): JobExecutionResult
 
   /**
-    * Creates a table source and/or table sink from a descriptor.
+    * Creates a temporary table from a descriptor.
     *
     * Descriptors allow for declaring the communication to external systems in an
     * implementation-agnostic way. The classpath is scanned for suitable table factories that match
     * the desired configuration.
     *
     * The following example shows how to read from a connector using a JSON format and
-    * registering a table source as "MyTable":
+    * registering a temporary table as "MyTable":
     *
     * {{{
     *
@@ -240,7 +389,7 @@ trait BatchTableEnvironment extends TableEnvironment {
     *     new Schema()
     *       .field("user-name", "VARCHAR").from("u_name")
     *       .field("count", "DECIMAL")
-    *   .registerSource("MyTable")
+    *   .createTemporaryTable("MyTable")
     * }}}
     *
     * @param connectorDescriptor connector descriptor describing the external system
@@ -288,21 +437,30 @@ object BatchTableEnvironment {
   def create(executionEnvironment: ExecutionEnvironment, tableConfig: TableConfig)
   : BatchTableEnvironment = {
     try {
+      // temporary solution until FLINK-15635 is fixed
+      val classLoader = Thread.currentThread.getContextClassLoader
+
+      val moduleManager = new ModuleManager
+
+      val defaultCatalog = "default_catalog"
+      val catalogManager = CatalogManager.newBuilder
+        .classLoader(classLoader)
+        .config(tableConfig.getConfiguration)
+        .defaultCatalog(
+          defaultCatalog,
+          new GenericInMemoryCatalog(defaultCatalog, "default_database"))
+        .executionConfig(executionEnvironment.getConfig)
+        .build
+
       val clazz = Class
         .forName("org.apache.flink.table.api.scala.internal.BatchTableEnvironmentImpl")
-      val const = clazz
+      val con = clazz
         .getConstructor(
           classOf[ExecutionEnvironment],
           classOf[TableConfig],
-          classOf[CatalogManager])
-      val builtInCatalog = "default_catalog"
-      val catalogManager = new CatalogManager(
-        "default_catalog",
-        new GenericInMemoryCatalog(
-          builtInCatalog,
-          "default_database")
-      )
-      const.newInstance(executionEnvironment, tableConfig, catalogManager)
+          classOf[CatalogManager],
+          classOf[ModuleManager])
+      con.newInstance(executionEnvironment, tableConfig, catalogManager, moduleManager)
         .asInstanceOf[BatchTableEnvironment]
     } catch {
       case t: Throwable => throw new TableException("Create BatchTableEnvironment failed.", t)

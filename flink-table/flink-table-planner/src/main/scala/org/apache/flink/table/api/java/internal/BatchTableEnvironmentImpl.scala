@@ -24,8 +24,9 @@ import org.apache.flink.table.api._
 import org.apache.flink.table.api.internal.BatchTableEnvImpl
 import org.apache.flink.table.api.java.BatchTableEnvironment
 import org.apache.flink.table.catalog.CatalogManager
-import org.apache.flink.table.expressions.ExpressionParser
+import org.apache.flink.table.expressions.{Expression, ExpressionParser}
 import org.apache.flink.table.functions.{AggregateFunction, TableFunction}
+import org.apache.flink.table.module.ModuleManager
 
 import _root_.scala.collection.JavaConverters._
 
@@ -39,11 +40,13 @@ import _root_.scala.collection.JavaConverters._
 class BatchTableEnvironmentImpl(
     execEnv: ExecutionEnvironment,
     config: TableConfig,
-    catalogManager: CatalogManager)
+    catalogManager: CatalogManager,
+    moduleManager: ModuleManager)
   extends BatchTableEnvImpl(
     execEnv,
     config,
-    catalogManager)
+    catalogManager,
+    moduleManager)
   with org.apache.flink.table.api.java.BatchTableEnvironment {
 
   override def fromDataSet[T](dataSet: DataSet[T]): Table = {
@@ -55,7 +58,13 @@ class BatchTableEnvironmentImpl(
       .parseExpressionList(fields).asScala
       .toArray
 
-    createTable(asQueryOperation(dataSet, Some(exprs)))
+    fromDataSet(dataSet, exprs: _*)
+  }
+
+  override def fromDataSet[T](
+      dataSet: DataSet[T],
+      fields: Expression*): Table = {
+    createTable(asQueryOperation(dataSet, Some(fields.toArray)))
   }
 
   override def registerDataSet[T](name: String, dataSet: DataSet[T]): Unit = {
@@ -64,6 +73,26 @@ class BatchTableEnvironmentImpl(
 
   override def registerDataSet[T](name: String, dataSet: DataSet[T], fields: String): Unit = {
     registerTable(name, fromDataSet(dataSet, fields))
+  }
+
+  override def createTemporaryView[T](
+      path: String,
+      dataSet: DataSet[T]): Unit = {
+    createTemporaryView(path, fromDataSet(dataSet))
+  }
+
+  override def createTemporaryView[T](
+      path: String,
+      dataSet: DataSet[T],
+      fields: String): Unit = {
+    createTemporaryView(path, fromDataSet(dataSet, fields))
+  }
+
+  override def createTemporaryView[T](
+      path: String,
+      dataSet: DataSet[T],
+      fields: Expression*): Unit = {
+    createTemporaryView(path, fromDataSet(dataSet, fields: _*))
   }
 
   override def toDataSet[T](table: Table, clazz: Class[T]): DataSet[T] = {

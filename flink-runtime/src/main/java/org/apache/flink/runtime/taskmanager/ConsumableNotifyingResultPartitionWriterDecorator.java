@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.taskmanager;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateReader;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
@@ -28,6 +29,7 @@ import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.concurrent.CompletableFuture;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -88,6 +90,11 @@ public class ConsumableNotifyingResultPartitionWriterDecorator implements Result
 	}
 
 	@Override
+	public void initializeState(ChannelStateReader stateReader) throws IOException, InterruptedException {
+		partitionWriter.initializeState(stateReader);
+	}
+
+	@Override
 	public boolean addBufferConsumer(BufferConsumer bufferConsumer, int subpartitionIndex) throws IOException {
 		boolean success = partitionWriter.addBufferConsumer(bufferConsumer, subpartitionIndex);
 		if (success) {
@@ -117,6 +124,11 @@ public class ConsumableNotifyingResultPartitionWriterDecorator implements Result
 	@Override
 	public void fail(Throwable throwable) {
 		partitionWriter.fail(throwable);
+	}
+
+	@Override
+	public CompletableFuture<?> getAvailableFuture() {
+		return partitionWriter.getAvailableFuture();
 	}
 
 	@Override
